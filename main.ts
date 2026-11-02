@@ -1,7 +1,7 @@
-// Graduation rider v14: hold a late-curve coin through to its bonding-curve completion, and carry a
+// Graduation rider v15: hold a late-curve coin through to its bonding-curve completion, and carry a
 // small filler book that makes cheap round trips so the entry still meets the fill and distinct-coin
-// guardrails on a window with no completion in it. It is v11 plus three changes, and nothing else
-// (v12 and v13 shipped the first two):
+// guardrails on a window with no completion in it. It is v11 plus four changes, and nothing else
+// (v12, v13 and v14 shipped the first three):
 //
 //   1. A creator-participation gate on rider *starts*. A new book may only open on a coin whose
 //      creator's first buy was above zero and at most 20 SOL. The gate applies to an idle entry, a
@@ -173,6 +173,19 @@
 // loss. The cap is measured where it fires -- the 16-seed phase sweep -- where it clips the only two
 // tail positions from -4.639 / -6.998 SOL to -1.457 / -1.500 SOL and leaves the guardrail-failing
 // draws at zero out of 96.
+//
+// v15 is v14 plus one change: the rider-start exemption is keyed on a position the bot actually
+// holds, not on the role flag. `role === 'rider'` is set when an order is DECIDED, so a tranche that
+// was rejected or failed at seeding left the role on a coin with nothing filled, and the next ticket
+// for that coin took the looser add gate and skipped riderStartsWell -- the creator gate, the 98%
+// near-high gate and the velocity cap -- through a gate opened by an order that never filled.
+// `hasRiderPosition` reads the two fields a filled tranche books (`riderSpent > 0n ||
+// stopReserve > 0n`) instead, so a book with no fill must pass the start gate like any other start.
+// Measured across the nineteen graded windows: PnL is identical to v14 to the lamport on every
+// window -- fills, distinct coins and drawdown identical to the last digit -- while rejected orders
+// fall 60 -> 39 (identity 6 -> 5), so the measurement is a literal tie and the change only removes
+// orders. The value is on a window we cannot see: a rejected first tranche on a coin that has gone
+// vertical would otherwise let that coin in through the gate built to refuse it.
 //
 // Decisions come only from the protocol's hello, batch events, marks, fills and account: no clock,
 // no randomness, no network, no files. Fills are echoed to stderr for diagnostics; no decision ever
@@ -595,7 +608,7 @@ function creatorAllows(c: Coin): boolean {
  * gate above, that is still within RIDER_MIN_NEAR_HIGH_BPS of its own reserve high, and whose
  * reserve rose no faster than RIDER_MAX_VELOCITY_24 per slot over the last RIDER_VELOCITY_SLOTS
  * slots. It applies to starts only -- idle entries, filler promotions and the preemption scan --
- * never to an add on a book already open, which keeps the looser add gate.
+ * never to an add on a book that has already filled a tranche, which keeps the looser add gate.
  */
 function riderStartsWell(c: Coin, slot: number): boolean {
   return (
@@ -606,13 +619,29 @@ function riderStartsWell(c: Coin, slot: number): boolean {
 }
 
 /**
+ * A rider book with an actual position: a filled tranche has spent lamports, or a fill has booked
+ * the stop basis. Both are written by the fill handler and cleared when the book closes, so this is
+ * true exactly when the bot holds something the add gate is meant to protect -- never for a book
+ * that was merely decided and rejected.
+ */
+function hasRiderPosition(c: Coin): boolean {
+  return c.riderSpent > 0n || c.stopReserve > 0n;
+}
+
+/**
  * The rider entry test, shared by entries, adds, promotions and the preemption scan. Two paths: the
  * primary one at ENTRY_RESERVE, and the second gate at GATE_RESERVE for a coin that has already run
  * to that floor and is still near its own high. At the shipped constants (both 30 SOL) the two paths
  * are the same test, so the gate is what makes the test hold when ENTRY_RESERVE is moved above the
- * floor. The final clause is the rider start gate: it applies to a book that is not open yet. The
- * near-high clause is role-dependent: a fresh start or a filler entry keeps NEAR_HIGH_BPS, while a
- * book that is already a rider may add through RIDER_ADD_NEAR_HIGH_BPS of its own high.
+ * floor. The final clause is the rider start gate: it applies to a book that has not filled yet.
+ *
+ * v15: the add exemption is keyed on an actual position (`hasRiderPosition`), not on `role`. The role
+ * is set when an order is DECIDED, so a tranche that is rejected or fails at seeding leaves it behind
+ * with nothing filled; keyed on the role, that phantom book took the looser add gate and skipped
+ * riderStartsWell on the coin's next ticket -- the bypass this change closes. A book with a filled
+ * tranche or a booked basis may add through RIDER_ADD_NEAR_HIGH_BPS of its own high; anything else
+ * keeps NEAR_HIGH_BPS and must pass the start gate. A filler promoted to rider likewise keeps the
+ * start gate until its first rider tranche fills, as the stop-basis comment already says.
  */
 function riderQualifies(c: Coin, slot: number): boolean {
   const atPrimary = c.reserve >= ENTRY_RESERVE;
@@ -620,11 +649,11 @@ function riderQualifies(c: Coin, slot: number): boolean {
   return (
     !c.complete &&
     (atPrimary || atGate) &&
-    c.reserve * BPS >= c.reserveHigh * (c.role === 'rider' ? RIDER_ADD_NEAR_HIGH_BPS : NEAR_HIGH_BPS) &&
+    c.reserve * BPS >= c.reserveHigh * (hasRiderPosition(c) ? RIDER_ADD_NEAR_HIGH_BPS : NEAR_HIGH_BPS) &&
     c.inflow > MIN_INFLOW &&
     slot >= c.nextEntrySlot &&
     c.reserve > c.blockedAtOrBelow &&
-    (c.role === 'rider' || riderStartsWell(c, slot))
+    (hasRiderPosition(c) || riderStartsWell(c, slot))
   );
 }
 

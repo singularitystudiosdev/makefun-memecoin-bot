@@ -47,11 +47,14 @@ completers). Both apply only to a start — an idle entry, a filler promotion, o
 the filler book keeps the 91% test too, because that constant also moves the filler entries and
 tightening it there costs the pumping windows. Later adds on an open rider use their own, looser
 gate: a held rider keeps buying while the reserve is still within 75% of the coin's own high, where
-a start needs 98% and a filler 91%. The 1%-per-reply cap binds almost every rider buy, so a reply
-the stricter gate skipped is capital the ladder never gets back, and a pullback inside a live climb
-is not the same thing as an entry on a coin that has already faded. That is what keeps a dip from
-stranding the ladder mid-climb: on the dev window the second completer deploys 10.22 SOL through its
-pullbacks instead of stopping at 9.42.
+a start needs 98% and a filler 91%. The exemption is keyed on a filled rider position — lamports a
+filled tranche spent, or a stop basis one booked — and not on the role flag, which a rejected or
+seeded-failed tranche sets when the order is merely decided; a book with nothing filled takes the
+start gate on its next ticket like any other start. The 1%-per-reply cap binds almost every rider
+buy, so a reply the stricter gate skipped is capital the ladder never gets back, and a pullback
+inside a live climb is not the same thing as an entry on a coin that has already faded. That is what
+keeps a dip from stranding the ladder mid-climb: on the dev window the second completer deploys 10.22
+SOL through its pullbacks instead of stopping at 9.42.
 
 A separate start gate reads the creator. The bot records the coin's creator from its `CreateEvent` and
 the creator's first buy from the tape, and a rider book may only open where that first buy is above
@@ -192,17 +195,22 @@ write-off closes). No reply can put more than 5 positions on the book, and every
 
 ## What was measured on the dev window
 
-The entry as committed (v14) is the grade-local result over the kit's dev window (2026-10-27
+The entry as committed (v15) is the grade-local result over the kit's dev window (2026-10-27
 00:08-06:08 UTC), two executions, byte-identical action logs:
 
 * net **+24.334941 SOL** (return +2.433494 on the 10 SOL account);
-* 348 fills over 101 coins, 132 round trips, win rate 12.12%, 7 seeded failed transactions, 6
+* 348 fills over 101 coins, 132 round trips, win rate 12.12%, 7 seeded failed transactions, 5
   rejected orders;
 * maximum drawdown **14.73%** against the 50% guardrail;
 * all three guardrails met: 348 >= 80 fills, 101 >= 10 distinct coins, 14.73% < 50% drawdown.
 
-v14 is v13 plus the loss cap, and on this dev window the cap is dormant: the row above is v13's row
-to the lamport. Net **+24.334941 SOL**, **348 fills** over **101 coins**, drawdown **14.7264%**, all
+v15 is v14 plus the position-keyed start exemption, and its row is v14's to the lamport except for
+the rejected count (6 -> 5) and the action log, which is `dba7dd6c…` because the one order a phantom
+rider book used to send is no longer sent; across all nineteen graded windows PnL is identical to the
+lamport on every window and rejected orders fall 60 -> 39.
+
+v14 is v13 plus the loss cap, and on this dev window the cap is dormant: v14's row is v13's row to
+the lamport. Net **+24.334941 SOL**, **348 fills** over **101 coins**, drawdown **14.7264%**, all
 three guardrails met, `l1.reproduced: true`, action log `038dfd55…` — the recorded v13 identity. Every
 one of the 23 base-grade rows (13 stride, 5 five-slice, 4 disjoint, identity) reproduces v13's action
 log on both executions, and the stride mean is **+10.598386683** on both. The cap is measured where it
