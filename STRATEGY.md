@@ -29,7 +29,8 @@ these hold:
 
 * its real SOL reserve is at least 30 SOL (it is already late up the curve);
 * the reserve is still within 91% of the coin's own reserve high, i.e. the coin has not rolled over
-  by more than 9%;
+  by more than 9% — or, once the book already holds the coin as a rider, within 75% of that high
+  (v10's add gate, described below);
 * net quote flow over its last 12 trades is positive;
 * the coin is not in its re-entry cooldown and its reserve is above the level the last exit blocked.
 
@@ -42,8 +43,14 @@ chase filter: the quiet windows' worst losing book had already given back 5.5% o
 while every completing book started at 10000. The second rejects a coin at the top of a vertical
 move, which is the other losing book on those windows (1.220 SOL/slot against 0.00-0.20 for the
 completers). Both apply only to a start — an idle entry, a filler promotion, or the preemption scan;
-later adds on an open rider keep the shipped 91% test, and the filler book keeps it too, because
-that constant also moves the filler entries and tightening it there costs the pumping windows.
+the filler book keeps the 91% test too, because that constant also moves the filler entries and
+tightening it there costs the pumping windows. Later adds on an open rider use their own, looser
+gate: a held rider keeps buying while the reserve is still within 75% of the coin's own high, where
+a start needs 98% and a filler 91%. The 1%-per-reply cap binds almost every rider buy, so a reply
+the stricter gate skipped is capital the ladder never gets back, and a pullback inside a live climb
+is not the same thing as an entry on a coin that has already faded. That is what keeps a dip from
+stranding the ladder mid-climb: on the dev window the second completer deploys 10.22 SOL through its
+pullbacks instead of stopping at 9.42.
 
 A second entry gate keeps the entry price from following the threshold up. A coin that has already
 run to 30 SOL of real reserve — the shipped threshold, a fixed floor rather than a share of the
@@ -130,25 +137,30 @@ write-off closes). No reply can put more than 5 positions on the book, and every
 
 ## What was measured on the dev window
 
-The entry as committed (v9) is the grade-local result over the kit's dev window (2026-10-27
+The entry as committed (v10) is the grade-local result over the kit's dev window (2026-10-27
 00:08-06:08 UTC), two executions, byte-identical action logs:
 
-* net **+23.376588 SOL** (return +2.337659 on the 10 SOL account), 90% interval **+5.864936 ..
-  +48.220047 SOL** (1,000 token-bootstrap resamples);
-* 742 fills over 152 coins, 318 round trips, win rate 17.92%, 21 seeded failed transactions, 4
+* net **+23.647432 SOL** (return +2.364743 on the 10 SOL account);
+* 747 fills over 152 coins, 318 round trips, win rate 17.92%, 21 seeded failed transactions, 4
   rejected orders;
 * maximum drawdown **14.80%** against the 50% guardrail;
-* all three guardrails met: 742 >= 80 fills, 152 >= 10 distinct coins, 14.80% < 50% drawdown.
+* all three guardrails met: 747 >= 80 fills, 152 >= 10 distinct coins, 14.80% < 50% drawdown.
 
-The two rider-start gates were measured on a v7-based candidate; at the shipped constants the
-second gate is the primary test, so that candidate and v9 produce byte-identical action logs on this
-window (sha256 `f37dc317…`) and the same net to the lamport. On
-the thirteen overlapping dev windows on a fixed slot stride the candidate's mean is **+9.713543 SOL**
-against v8's +9.510831, its minimum +5.621829, and the worst drawdown **23.98%**; over the five
-4-hour dev windows the mean is **+5.403332** against +5.209767. The two constructed quiet windows
-improve from **-0.310837 / -0.284120** to **-0.110541 / -0.100093 SOL**, their drawdown falling to
-1.18% / 1.08%. Those windows are the number to trust more than this single 6-hour one: the sealed
-final window is 4 hours, and this file's gain sits in the completions.
+v10's add gate was measured on the v9-based candidate over the same 18 graded windows: thirteen
+overlapping stride windows mean **+10.202799 SOL** (v9 +9.713543), minimum **+5.956125**, five
+4-hour windows mean **+5.565716** (v9 +5.403332), worst quiet window **-0.110541** unchanged,
+worst drawdown **23.98%** unchanged. Every row finished, reproduced L1 and met the guardrails. The
+gain is concentrated on one completer (`C5DXREKp…`: 20 -> 22 tranches, 9.42 -> 10.22 SOL deployed,
++0.57 net per view); the other completer is cash-bound and unchanged. The cost is 0.46-0.49 SOL on
+two windows where the extra pullback tranche lands on a book that then stops. The response is flat
+from 6,000 to 7,700 bps on all 18 windows, and 7,500 sits inside that plateau.
+
+The two rider-start gates are v9's and were measured on a v7-based candidate; at the shipped
+constants the second gate is the primary test, so those gates change no decision and v9's measured
+numbers were the shipped file's. The two constructed quiet windows sit at **-0.110541 / -0.100093
+SOL** with 1.18% / 1.08% drawdown, unchanged by v10. Those windows are the number to trust more than
+this single 6-hour one: the sealed final window is 4 hours, and this file's gain sits in the
+completions.
 
 The second gate is v8's and is unchanged. Over thirteen overlapping dev windows on a fixed slot
 stride the mean at `ENTRY_RESERVE` 28/30/32/34 is **+9.126113 / +9.510831 / +9.534319 / +9.550456

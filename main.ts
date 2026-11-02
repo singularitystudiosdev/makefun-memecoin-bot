@@ -1,8 +1,11 @@
-// Graduation rider v9: hold a late-curve coin through to its bonding-curve completion, and carry a
+// Graduation rider v10: hold a late-curve coin through to its bonding-curve completion, and carry a
 // small filler book that makes cheap round trips so the entry still meets the fill and distinct-coin
-// guardrails on a window with no completion in it. It is v8 plus two rider-start gates, described
-// below: a rider book may only open on a coin still within 2% of its own reserve high and whose
-// climb has not gone vertical, while an open rider keeps adding under the shipped rules.
+// guardrails on a window with no completion in it. It is v9 plus one constant: an open rider keeps
+// adding through a deeper pullback (RIDER_ADD_NEAR_HIGH_BPS, 7,500 bps) than a fresh start
+// (RIDER_MIN_NEAR_HIGH_BPS, 9,800) or a filler entry (NEAR_HIGH_BPS, 9,100) allows, because the
+// 1%-per-reply cap makes every skipped reply capital the ladder never gets back. The v9 rider-start
+// gates below are unchanged and still apply to starts alone: a rider book may only open on a coin
+// still within 2% of its own reserve high and whose climb has not gone vertical.
 //
 // The book has two jobs. The first is to be holding tokens in a coin when its bonding curve
 // completes: a rider that enters a curve with R SOL of real reserves and is force-closed at the top
@@ -13,8 +16,9 @@
 //
 // The rider reads the protocol's own state: every delivered coin's real SOL reserve, the high that
 // reserve has set, and the signed quote flow of its last few trades. It starts buying when the
-// reserve is at ENTRY_RESERVE or more, still within NEAR_HIGH_BPS of the coin's own reserve high,
-// and the recent net flow is buying. A book may only *start* there if the coin is also within
+// reserve is at ENTRY_RESERVE or more, still within its near-high gate of the coin's own reserve
+// high (NEAR_HIGH_BPS for a start, RIDER_ADD_NEAR_HIGH_BPS once the book is held), and the recent
+// net flow is buying. A book may only *start* there if the coin is also within
 // RIDER_MIN_NEAR_HIGH_BPS of its high and has not risen faster than RIDER_MAX_VELOCITY_24 per slot
 // over the last RIDER_VELOCITY_SLOTS slots: the filler book keeps the looser NEAR_HIGH_BPS gate,
 // while the rider declines to open on a coin that has already given back more than 2% of its high
@@ -73,16 +77,33 @@
 // go unfilled.
 //
 // Measured on the dev windows through the replay: thirteen overlapping dev windows on a fixed slot
-// stride mean +9.713543 SOL with a worst drawdown of 23.98% (v8: +9.510831); the five-window dev
-// set +5.403332 mean (v8: +5.209767); the worst constructed quiet window -0.110541 SOL against
-// v8's -0.310837; the 6-hour dev window +23.376588 SOL over 742 fills and 152 coins at 14.80% max
-// drawdown. The rider-start gates are v9's change and were measured on the v7-based candidate; at
-// the shipped constants the second gate is dormant, so v9 and that candidate produce byte-identical
-// action logs on the identity window and the same net to the lamport. The threshold response is
-// v8's, unchanged: +9.126113 / +9.510831 / +9.534319 / +9.550456 at ENTRY_RESERVE 28/30/32/34
-// (stop 9750), a 0.424343 SOL band where v7's is 3.190972 -- 86.70% flatter. Above the shipped 30
-// SOL the gate enters a coin that has already run to 30 SOL at that floor, with its stop anchored
-// at 99% of its own entry reserve. STRATEGY.md says what that trades and where it loses.
+// stride mean +10.202799 SOL with a worst drawdown of 23.98% (v9: +9.713543) and a minimum stride
+// window of +5.956125; the five-window dev set +5.565716 mean (v9: +5.403332); the worst constructed
+// quiet window -0.110541 SOL, v9's number unchanged; the 6-hour dev window +23.647432 SOL over 747
+// fills and 152 coins at 14.80% max drawdown (v9: +23.376588 over 742). The add gate is v10's only
+// change, and the rider-start gates are v9's: at the shipped constants the second gate is dormant,
+// so v9 and the v7-based candidate produce byte-identical action logs on the identity window. The
+// threshold response is v8's, unchanged: +9.126113 / +9.510831 / +9.534319 / +9.550456 at
+// ENTRY_RESERVE 28/30/32/34 (stop 9750), a 0.424343 SOL band where v7's is 3.190972 -- 86.70%
+// flatter. Above the shipped 30 SOL the gate enters a coin that has already run to 30 SOL at that
+// floor, with its stop anchored at 99% of its own entry reserve. STRATEGY.md says what that trades
+// and where it loses.
+//
+// The add gate is v10's ladder-speed change. The account's 1% cap is per mint per reply, so a book
+// deploys capital only on the replies it buys; a reply the near-high gate skips is SOL the ladder
+// never gets back. On the 6-hour dev window the two completer books deployed 9.58 and 9.42 SOL (18-22
+// filled tranches, first rider fill at 30-33 SOL, completion at 78-85), and the second was at 91.5%
+// of the most any ladder with the shipped 9,100 bps gate could deploy on its actual path (10.29
+// SOL); the first was deploying every lamport the account had. One lever is left inside the cap:
+// let a *held* book keep adding through a pullback that the start gate would still refuse. The
+// gate is separate from RIDER_MIN_NEAR_HIGH_BPS and from the filler's NEAR_HIGH_BPS, so starts and
+// filler round trips are unchanged. On the dev windows this is worth +10.202799 stride mean
+// (shipped +9.713543), minimum stride +5.956125, five-window mean +5.565716 (shipped +5.403332),
+// worst quiet window -0.110541 unchanged, worst drawdown 23.98% unchanged, and +23.647432 over 747
+// fills and 152 coins on the identity window (shipped +23.376588 / 742). The gain is concentrated:
+// 4jM56iiu and both quiet slices are unchanged, and last4h/stride-12 lose 0.46-0.49 SOL because the
+// looser gate adds a tranche to BctEGz before its stop. The response is flat from 6,000 to 7,700
+// bps on all 18 graded windows, and 7,500 sits inside that plateau rather than on the step.
 //
 // Decisions come only from the protocol's hello, batch events, marks, fills and account: no clock,
 // no randomness, no network, no files. Fills are echoed to stderr for diagnostics; no decision ever
@@ -117,11 +138,25 @@ const ENTRY_RESERVE = 30n * SOL;
  */
 const GATE_RESERVE = 30n * SOL;
 /**
- * The reserve must still be this share (bps) of the coin's own reserve high: a coin that has already
- * given back more than 9% of its reserve high is not a live pump, and those entries are the ones
- * that lose, while a tighter filter starts dropping coins that are still being bought.
+ * The reserve must still be this share (bps) of the coin's own reserve high for a *start* or a
+ * *filler* entry: a coin that has already given back more than 9% of its reserve high is not a live
+ * pump, and those entries are the ones that lose, while a tighter filter starts dropping coins that
+ * are still being bought. A rider book that is already held uses RIDER_ADD_NEAR_HIGH_BPS instead.
  */
 const NEAR_HIGH_BPS = 9_100n;
+/**
+ * The near-high gate on an *add* to an open rider book, and v10's only change. A book that is
+ * already held keeps buying through a deeper pullback than the start/filler gate allows: the
+ * 1%-per-reply cap makes every skipped reply capital the ladder never gets back, and a
+ * retracement inside a live climb is not the same thing as an entry on a coin that has already
+ * faded. 7,500 (within 25% of the high) is inside the flat 6,000-7,700 plateau on the dev windows:
+ * every value in that band produces the same net on all 18 graded windows. Above it the gate starts
+ * skipping adds the completion needs; below it no held book ever prints a reserve that the band has
+ * not already admitted. It is what moves the stride mean +9.713543 -> +10.202799 and the identity
+ * window +23.376588 -> +23.647432; the 0.46-0.49 SOL it costs on last4h/stride-12 is one extra
+ * pullback tranche on a book that then stops, which is the shape to watch.
+ */
+const RIDER_ADD_NEAR_HIGH_BPS = 7_500n;
 /** Slots the rider start gate's reserve-velocity window looks back over. */
 const RIDER_VELOCITY_SLOTS = 24;
 /**
@@ -387,7 +422,7 @@ function reserveVelocity(c: Coin, slot: number): bigint {
  * The rider start gate: a new book may only open on a coin still within RIDER_MIN_NEAR_HIGH_BPS of
  * its own reserve high whose reserve rose no faster than RIDER_MAX_VELOCITY_24 per slot over the
  * last RIDER_VELOCITY_SLOTS slots. It applies to starts only -- idle entries, filler promotions and
- * the preemption scan -- never to an add on a book already open, which keeps the shipped rules.
+ * the preemption scan -- never to an add on a book already open, which keeps the looser add gate.
  */
 function riderStartsWell(c: Coin, slot: number): boolean {
   return (
@@ -401,8 +436,9 @@ function riderStartsWell(c: Coin, slot: number): boolean {
  * primary one at ENTRY_RESERVE, and the second gate at GATE_RESERVE for a coin that has already run
  * to that floor and is still near its own high. At the shipped constants (both 30 SOL) the two paths
  * are the same test, so the gate is what makes the test hold when ENTRY_RESERVE is moved above the
- * floor. The final clause is the rider start gate: it applies to a book that is not open yet, while
- * an open rider keeps adding under the shipped rules alone.
+ * floor. The final clause is the rider start gate: it applies to a book that is not open yet. The
+ * near-high clause is role-dependent: a fresh start or a filler entry keeps NEAR_HIGH_BPS, while a
+ * book that is already a rider may add through RIDER_ADD_NEAR_HIGH_BPS of its own high.
  */
 function riderQualifies(c: Coin, slot: number): boolean {
   const atPrimary = c.reserve >= ENTRY_RESERVE;
@@ -410,7 +446,7 @@ function riderQualifies(c: Coin, slot: number): boolean {
   return (
     !c.complete &&
     (atPrimary || atGate) &&
-    c.reserve * BPS >= c.reserveHigh * NEAR_HIGH_BPS &&
+    c.reserve * BPS >= c.reserveHigh * (c.role === 'rider' ? RIDER_ADD_NEAR_HIGH_BPS : NEAR_HIGH_BPS) &&
     c.inflow > MIN_INFLOW &&
     slot >= c.nextEntrySlot &&
     c.reserve > c.blockedAtOrBelow &&
