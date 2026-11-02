@@ -55,7 +55,9 @@ pullbacks instead of stopping at 9.42.
 
 A separate start gate reads the creator. The bot records the coin's creator from its `CreateEvent` and
 the creator's first buy from the tape, and a rider book may only open where that first buy is above
-zero and at most 20 SOL. It admits an organic launch — a creator that put a small but real stake
+zero and at most 20 SOL. A coin whose creator is not yet recorded — one first delivered through a
+trade with no `CreateEvent` seen — passes the gate rather than being refused on a reading it does not
+have; only a known creator can fail it. It admits an organic launch — a creator that put a small but real stake
 behind its own coin — and refuses both degenerate shapes: a creator that never bought at all
 (launching-and-leaving, no stake behind the coin) and a whale-first-buy launch of tens of SOL, which
 has no organic demand behind it. The gate applies to starts only — an idle entry, a filler promotion
@@ -98,14 +100,35 @@ equal to the slice, a full rider is normally the whole book.
 
 ## When the rider exits
 
-A rider is held toward completion. It is sold before then only by one of four guards:
+A rider is held toward completion. It is sold before then only by one of five guards:
 
 | guard | rule | purpose |
 | --- | --- | --- |
 | reserve stop | real reserve at 97.5% of 30 SOL, the entry threshold | sells a retrace below the lowest reserve the rider's own ladder can have been filled at |
+| loss cap | gross liquidation value of the position 1.0 SOL under its cost basis | prices the position, not the coin: bounds the loss a reserve stop cannot see |
 | reserve floor | real reserve under 90% of the reserve the rider entered on | defence in depth: unreachable while the stop basis exists, and covers a promoted filler before its first rider tranche fills |
 | crash guard | price under 50% of the high the position has reached since entry | defence in depth: a disaster stop for a market with no stop-limit orders |
 | stall | no new real-reserve high on the market tape for 225 slots | frees the slot from a coin that has stopped pumping |
+
+The loss cap is v14's only change and the one guard that prices the position rather than the coin.
+Every other guard above reads the coin — its recorded reserve, its high, its tape — and the reserve
+stop compares that reserve against a basis booked at the entry threshold, which is the lowest reserve
+the rider's own ladder can have been filled at, not the price it paid. The mark's real reserve
+carries the book's own buys, so a position bought up from a 32 SOL tape to a 45 SOL mark can sit more
+than ten SOL above the 29.25 SOL stop line after the tape has given up everything the book put in. On
+the 02:08–04:08 phase seed the book put 9.63 SOL into one coin at tape reserves 30–42, watched the
+tape fall to 16, and did not trip the reserve stop until the mark reached 29.15; the sell then filled
+at 4.99 SOL for a −4.6356 SOL position, 46.4% of capital, and the window failed the 50% drawdown
+guardrail at 54.82%. The cap closes that gap when the gross SOL a close of the whole holding would
+return into the mark's curve is 1.0 SOL below the account's own cost basis for the tokens still held,
+fees included: a rider that is a SOL under water exits instead of waiting for the coin's stop line to
+come down to it. It yields to the reserve stop when both fire — a stopped book keeps v13's exit
+reason and re-entry rule — and a capped book gets the same 105%-of-exit-reserve block and 50-slot
+cooldown. Measured on a sweep of 16 phase seeds over six windows on four books, it takes the
+guardrail-failing draws from 1/96 to 0/96, clips the only two tail positions from −4.639 and −6.998
+SOL to −1.457 and −1.500 SOL, and moves the failing draw from −4.653 SOL at 54.82% drawdown to
+−1.472 at 20.30%. It costs nothing on the recorded windows: all 23 base-grade windows reproduce v13's
+action log bit for bit, because no position on them ever reaches a 1.0 SOL unrealised loss.
 
 The reserve stop's basis is the entry threshold, not the reserve the book happened to get in at. A
 rider buy is only decided while the recorded reserve is at or above 30 SOL, so 30 SOL is the lowest
@@ -169,7 +192,7 @@ write-off closes). No reply can put more than 5 positions on the book, and every
 
 ## What was measured on the dev window
 
-The entry as committed (v12) is the grade-local result over the kit's dev window (2026-10-27
+The entry as committed (v14) is the grade-local result over the kit's dev window (2026-10-27
 00:08-06:08 UTC), two executions, byte-identical action logs:
 
 * net **+24.334941 SOL** (return +2.433494 on the 10 SOL account);
@@ -177,6 +200,15 @@ The entry as committed (v12) is the grade-local result over the kit's dev window
   rejected orders;
 * maximum drawdown **14.73%** against the 50% guardrail;
 * all three guardrails met: 348 >= 80 fills, 101 >= 10 distinct coins, 14.73% < 50% drawdown.
+
+v14 is v13 plus the loss cap, and on this dev window the cap is dormant: the row above is v13's row
+to the lamport. Net **+24.334941 SOL**, **348 fills** over **101 coins**, drawdown **14.7264%**, all
+three guardrails met, `l1.reproduced: true`, action log `038dfd55…` — the recorded v13 identity. Every
+one of the 23 base-grade rows (13 stride, 5 five-slice, 4 disjoint, identity) reproduces v13's action
+log on both executions, and the stride mean is **+10.598386683** on both. The cap is measured where it
+fires: on the 16-seed phase sweep the guardrail-failing draws go **1/96 → 0/96**, the worst
+single-position loss **−6.998 → −1.500 SOL**, and the worst drawn drawdown **54.82% → 20.30%**, at a
+stride-mean cost of **0.000000 SOL** on the recorded windows.
 
 v12 is v11 plus the creator gate and the retire rule, and the dev window isolates the gate's effect:
 net rises **+0.476620 SOL** while fills fall from 374 to 348 and coins from 103 to 101. The gate
@@ -253,5 +285,12 @@ the lamport before the rider-start gates are applied.
   of 30 SOL (29.25), which is roughly a 16% loss before the stop when it opened at 35. The stop and
   the 15 SOL per-coin budget, not the floor, bound that; a curve that gaps from a high reserve to
   zero between a decision and its fill can still cost more than the stop.
+* **The loss cap bounds a bleed, not a single-batch gap.** The 1.0 SOL cap is evaluated on the mark
+  at decision time, so it bounds a position that is losing while the market prints. It cannot bound a
+  batch in which the curve gaps through both the reserve stop and the cap between two marks: a 15 SOL
+  book marked at par on one batch and at zero on the next loses the book whatever the cap reads. What
+  it does bound is the slow bleed the reserve stop cannot see — the position that stays above the
+  29.25 SOL line while its mark falls — and on the phase sweep that is the loss that took the worst
+  single-position result from −6.998 to −1.500 SOL.
 * The bot keeps its state in memory for the run (a few hundred coins), and memory is not a concern
   at this scale.

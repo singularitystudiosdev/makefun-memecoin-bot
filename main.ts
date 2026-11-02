@@ -1,6 +1,7 @@
-// Graduation rider v12: hold a late-curve coin through to its bonding-curve completion, and carry a
+// Graduation rider v14: hold a late-curve coin through to its bonding-curve completion, and carry a
 // small filler book that makes cheap round trips so the entry still meets the fill and distinct-coin
-// guardrails on a window with no completion in it. It is v11 plus two changes, and nothing else:
+// guardrails on a window with no completion in it. It is v11 plus three changes, and nothing else
+// (v12 and v13 shipped the first two):
 //
 //   1. A creator-participation gate on rider *starts*. A new book may only open on a coin whose
 //      creator's first buy was above zero and at most 20 SOL. The gate applies to an idle entry, a
@@ -9,8 +10,32 @@
 //      a creator, and with no reading it refuses nothing (see creatorAllows).
 //   2. Retire-after-2-rejections. A rider book with two consecutive rejected tranches and no filled
 //      tranche releases its role and its slot at once, exactly as a stall exit does.
+//   3. A hard 1.0 SOL loss cap on a held rider book. A book whose gross liquidation value at the
+//      current mark is 1.0 SOL below the account's own cost basis for the tokens still held is sold
+//      at once, whatever the reserve stop reads. It is the one guard that prices the position
+//      instead of the coin, and on the 16-seed sweep it clips the only two tail positions from
+//      -4.639 / -6.998 SOL to -1.457 / -1.500 SOL and takes the guardrail-failing draws from 1/96
+//      to 0/96 at zero cost: all 23 base-grade windows are bit-identical to v13.
 //
 // The rider, the filler book, every constant and every other guard are v11's, unchanged.
+//
+// Why the loss cap, and why it is v14's only change. The shipped v13 file's four rider guards all
+// read the *coin* -- the recorded reserve against a baseline booked at ENTRY_RESERVE, the reserve
+// floor, the crash guard's share of the post-entry high, and the stall clock -- and the first of
+// those is the one meant to stop a losing book. It cannot see the
+// loss that matters: the mark's real reserve carries the book's own buys, so a position bought up
+// from a 32 SOL tape to a 45 SOL mark sits about 8-10 SOL above the 29.25 SOL stop line even after
+// the tape has given every SOL of that progress back. On the 02:08-04:08 seed below the book bought
+// 9.63 SOL into one coin at tape reserves 30-42, watched the tape fall to 16, and did not trip the
+// reserve stop until the mark itself reached 29.15; the sell then filled at 4.99 SOL for a
+// -4.6356 SOL position (46.4% of capital) and the window failed the 50% drawdown guardrail at 54.82%.
+// A hard loss cap priced off the position, not the coin, is the guard that sees it: when the gross
+// SOL a close of the whole holding would return at the mark is LOSS_CAP_LAMPORTS below the account's
+// own cost basis for the tokens still held, the book leaves at once. Measured in `STRATEGY.md`:
+// 1.0 SOL is the shipped cell, the only tail positions in a 16-seed sweep (-4.639 and -6.998 SOL)
+// are clipped to -1.457 and -1.500 SOL, the guardrail-failing draws go from one to zero, and all 23
+// base-grade windows reproduce bit-identically (the same action log) because no position on them
+// ever reaches a 1.0 SOL unrealised loss.
 //
 // Why the creator gate. A creator that puts nothing into its own launch is launching-and-leaving; a
 // coin whose creator's first buy is tens of SOL is a whale launch with no organic demand behind it.
@@ -75,11 +100,12 @@
 // most the rider book may commit, so the rest is always there for the filler round trips and for
 // transaction fees.
 //
-// A rider is held toward completion and sold early only by four guards: the recorded real reserve
-// falls to RESERVE_STOP_BPS of its booked stop basis, the real reserve falls under
-// RESERVE_FLOOR_BPS of the reserve the rider entered on, the price gives back the crash guard's
-// share of its post-entry high, or the recorded reserve has made no new high on the market tape for
-// STALL_SLOTS slots (which frees the slot from a coin that has stopped pumping).
+// A rider is held toward completion and sold early only by five guards: the recorded real reserve
+// falls to RESERVE_STOP_BPS of its booked stop basis, the gross liquidation value of the position
+// falls LOSS_CAP_LAMPORTS below its cost basis, the real reserve falls under RESERVE_FLOOR_BPS of the
+// reserve the rider entered on, the price gives back the crash guard's share of its post-entry high,
+// or the recorded reserve has made no new high on the market tape for STALL_SLOTS slots (which
+// frees the slot from a coin that has stopped pumping).
 //
 // The stop line's basis is the entry threshold, and the second gate is what makes that hold when
 // the threshold moves. A primary rider buy is decided at or above ENTRY_RESERVE, so booking the
@@ -140,6 +166,13 @@
 // every window, which is why it ships as hygiene rather than as a lever. The filler's own change,
 // v11 over v10, was the fee bill: the constructed quiet slices went -0.100093 / -0.110541 ->
 // -0.020373 / -0.021914 SOL and the identity window +23.647432 -> +23.858321.
+//
+// v14 reproduces that block to the lamport and to the action log: the identity window is the same
+// +24.334941 SOL over 348 fills and 101 coins at 14.7264%, and every one of the 23 base-grade
+// windows is bit-identical to v13, because no position on them ever reaches a 1.0 SOL unrealised
+// loss. The cap is measured where it fires -- the 16-seed phase sweep -- where it clips the only two
+// tail positions from -4.639 / -6.998 SOL to -1.457 / -1.500 SOL and leaves the guardrail-failing
+// draws at zero out of 96.
 //
 // Decisions come only from the protocol's hello, batch events, marks, fills and account: no clock,
 // no randomness, no network, no files. Fills are echoed to stderr for diagnostics; no decision ever
@@ -253,6 +286,23 @@ const MIN_RIDER_BUY = SOL / 50n;
  * two SOL either way without the stop line cutting into a ladder that is still building.
  */
 const RESERVE_STOP_BPS = 9_750n;
+/**
+ * v14: the hard SOL loss cap on a held non-filler book, in lamports, or 0n to switch it off. A
+ * book whose gross liquidation value at the current mark -- the SOL a close of the whole holding
+ * would return into the mark's curve, `sellProceeds` -- is this many lamports below the account's
+ * own cost basis for the tokens still held leaves at once, whatever the reserve stop reads. The
+ * reserve stop compares the recorded reserve against a basis booked at ENTRY_RESERVE, and the mark's
+ * real reserve carries the book's own buys, so a position bought up from a 32 SOL tape to a 45 SOL
+ * mark still shows a reserve 10+ SOL above the 29.25 SOL stop line after the tape has given up
+ * everything the book put in. That is the tail this cap bounds: one coin on one phase seed lost
+ * 9.63 SOL of cost to a 4.99 SOL exit at a 54.82% window drawdown, and the same coin cost 6.99 SOL
+ * on another. 1.0 SOL is the shipped cell because it clips the only tail positions in the sweep to
+ * -1.457 and -1.500 SOL, flips the guardrail-failing draws from one to zero, and is bit-identical to
+ * v13 on all 23 base-grade windows (the same action log: no position there ever reaches
+ * a 1.0 SOL unrealised loss). 0.5 SOL meets the same loss bound but costs 10.36 SOL of thirteen-
+ * window stride mean, because a half-SOL drawdown is ordinary noise inside a live ladder.
+ */
+const LOSS_CAP_LAMPORTS = 1_000_000_000n;
 /**
  * A rider tranche the second gate bought below ENTRY_RESERVE books its stop basis at this share (bps)
  * of its decision reserve instead of at ENTRY_RESERVE, which would sit above the fill and close the
@@ -744,7 +794,7 @@ function run(batch: Batch, state: BotState): OrderInput[] {
   const orders: OrderInput[] = [];
 
   // ---------------------------------------------------------------- 1. exits
-  type Reason = 'stop' | 'floor' | 'crash' | 'stall' | 'fillerTrail' | 'fillerTime' | 'preempt';
+  type Reason = 'stop' | 'cap' | 'floor' | 'crash' | 'stall' | 'fillerTrail' | 'fillerTime' | 'preempt';
   const leaving = new Map<string, Reason>();
   const considerExit = (mint: string, holding: { token_amount: bigint }): void => {
     if (holding.token_amount === 0n || pendingSell.has(mint)) return;
@@ -774,11 +824,24 @@ function run(batch: Batch, state: BotState): OrderInput[] {
     // primary tranche, 99% of the decision reserve for a second-gate tranche bought below it. It
     // fires at RESERVE_STOP_BPS of that basis, so the 90% floor below it is unreachable while a basis
     // exists and is kept only for a promoted filler with no basis yet.
+    //
+    // v14: the loss cap prices the position, not the coin. `sellProceeds` is the gross SOL a
+    // close of the whole holding would return into the mark's curve, so this reads the quantity the
+    // reserve stop was written to read but cannot: the mark's real reserve carries the book's own
+    // buys, so it can sit ten SOL above a 29.25 SOL stop line while the position is deep under
+    // water. `cost_lamports` is the account's own cost basis for the tokens still held, fees
+    // included; the sell fee is not subtracted here, which makes the trigger at most 1.25% early.
+    const position = state.positions.get(mint);
+    const positionValue = position === undefined ? 0n : sellProceeds(position.token_amount, c.vq, c.vt);
+    const basis = position === undefined ? 0n : BigInt(position.cost_lamports);
+    const lossCap =
+      LOSS_CAP_LAMPORTS > 0n && position !== undefined && basis > positionValue && basis - positionValue >= LOSS_CAP_LAMPORTS;
     const stop = c.stopReserve > 0n && c.reserve * BPS <= c.stopReserve * RESERVE_STOP_BPS;
     const floor = c.entryReserve > 0n && c.reserve * BPS < c.entryReserve * RESERVE_FLOOR_BPS;
     const crash = c.vt > 0n && !priceAbove(c.vq, c.vt, (c.runVq * (BPS - CRASH_GUARD_BPS)) / BPS, c.runVt);
     const stall = batch.slot - c.runHighSlot > STALL_SLOTS;
     if (stop) leaving.set(mint, 'stop');
+    else if (lossCap) leaving.set(mint, 'cap');
     else if (floor) leaving.set(mint, 'floor');
     else if (crash) leaving.set(mint, 'crash');
     else if (stall) leaving.set(mint, 'stall');
@@ -811,7 +874,7 @@ function run(batch: Batch, state: BotState): OrderInput[] {
     const c = coins.get(mint);
     if (holding === undefined || c === undefined) continue;
     orders.push({ side: 'sell', mint, token_amount: holding.token_amount, max_slippage_bps: SELL_SLIPPAGE_BPS });
-    if (reason === 'stop' || reason === 'floor' || reason === 'fillerTrail') {
+    if (reason === 'stop' || reason === 'cap' || reason === 'floor' || reason === 'fillerTrail') {
       c.blockedAtOrBelow = (c.reserve * 10_500n) / BPS;
       c.nextEntrySlot = batch.slot + COOLDOWN_SLOTS;
     } else if (reason === 'crash') {
