@@ -1,11 +1,19 @@
-// Graduation rider v10: hold a late-curve coin through to its bonding-curve completion, and carry a
+// Graduation rider v11: hold a late-curve coin through to its bonding-curve completion, and carry a
 // small filler book that makes cheap round trips so the entry still meets the fill and distinct-coin
-// guardrails on a window with no completion in it. It is v9 plus one constant: an open rider keeps
-// adding through a deeper pullback (RIDER_ADD_NEAR_HIGH_BPS, 7,500 bps) than a fresh start
-// (RIDER_MIN_NEAR_HIGH_BPS, 9,800) or a filler entry (NEAR_HIGH_BPS, 9,100) allows, because the
-// 1%-per-reply cap makes every skipped reply capital the ladder never gets back. The v9 rider-start
-// gates below are unchanged and still apply to starts alone: a rider book may only open on a coin
-// still within 2% of its own reserve high and whose climb has not gone vertical.
+// guardrails on a window with no completion in it. It is v10 plus one change to the filler book:
+// the 0.005 SOL round trip becomes 0.002 SOL, filler entries are spaced at least 300 slots apart,
+// and the stake halves again once a window is an hour old and the account is down with
+// no rider open. v10's rider is unchanged, including the 75% add gate and the two rider-start gates.
+//
+// Why the filler changed. The rider book is the whole edge and it does not open on a quiet window:
+// on both constructed quiet slices v10 makes no rider fill at all, so their entire loss is the filler
+// book's fees. At 0.005 SOL a round trip pays two curve fees (~2.5% of the stake each) plus two
+// transaction fees (0.000105 SOL each), and on the four-hour quiet slices the book made 220-224 round
+// trips for -0.100093 / -0.110541 SOL. The fills and distinct coins are only needed at the guardrail
+// (80 fills over 10 coins), and v10 overshoots that by 5x on a quiet window. Spacing the entries and
+// shrinking the stake cuts the fee bill while keeping the guardrail margin: on the same two slices
+// the shipped constants below measure -0.020373 / -0.021914 SOL over 174-180 fills and 70 coins,
+// and the 13-window stride mean and the 6-hour identity window both improve slightly (below).
 //
 // The book has two jobs. The first is to be holding tokens in a coin when its bonding curve
 // completes: a rider that enters a curve with R SOL of real reserves and is force-closed at the top
@@ -69,41 +77,30 @@
 // was a filler, so their decided slots are not in the map), so until then it is held by the floor,
 // the crash guard and the stall clock only. A fresh rider always books on its first filled tranche.
 //
-// The slots the riders do not need carry a filler: a 0.005 SOL round trip on a coin that is rising
-// but still far under the rider threshold, held at most FILLER_MAX_HOLD slots. Each round trip costs
-// a few hundred thousand lamports, and the fills and distinct coins it buys are what keep the entry
+// The slots the riders do not need carry a filler: a 0.002 SOL round trip on a coin that is rising
+// but still far under the rider threshold, held at most FILLER_MAX_HOLD slots. Entries are spaced at
+// least FILLER_COOLDOWN_SLOTS slots apart, so the book cannot churn: on a quiet four-hour window v10
+// made 220-224 round trips and this file makes 87-90, 174-180 fills. Each round trip costs two curve
+// fees plus two transaction fees, and the fills and distinct coins it buys are what keep the entry
 // eligible on a window that never completes a curve. A filler that reaches the rider threshold is
 // promoted in place, and a filler gives its slot up at once when a rider candidate would otherwise
 // go unfilled.
 //
-// Measured on the dev windows through the replay: thirteen overlapping dev windows on a fixed slot
-// stride mean +10.202799 SOL with a worst drawdown of 23.98% (v9: +9.713543) and a minimum stride
-// window of +5.956125; the five-window dev set +5.565716 mean (v9: +5.403332); the worst constructed
-// quiet window -0.110541 SOL, v9's number unchanged; the 6-hour dev window +23.647432 SOL over 747
-// fills and 152 coins at 14.80% max drawdown (v9: +23.376588 over 742). The add gate is v10's only
-// change, and the rider-start gates are v9's: at the shipped constants the second gate is dormant,
-// so v9 and the v7-based candidate produce byte-identical action logs on the identity window. The
-// threshold response is v8's, unchanged: +9.126113 / +9.510831 / +9.534319 / +9.550456 at
-// ENTRY_RESERVE 28/30/32/34 (stop 9750), a 0.424343 SOL band where v7's is 3.190972 -- 86.70%
-// flatter. Above the shipped 30 SOL the gate enters a coin that has already run to 30 SOL at that
-// floor, with its stop anchored at 99% of its own entry reserve. STRATEGY.md says what that trades
-// and where it loses.
+// Once a window is more than an hour old (FIRST_HOUR_SLOTS slots since its first delivered event) and
+// the account is below its starting capital with no rider open, the filler stake halves again. That
+// is the capital-return rule: on a window that never pumps, the branch this file was tuned for, the
+// bleed rate halves instead of the book paying the full stake's curve fees to the end. The clock is
+// slots since the window's first event, never wall time, and it cannot fire while a rider is open.
 //
-// The add gate is v10's ladder-speed change. The account's 1% cap is per mint per reply, so a book
-// deploys capital only on the replies it buys; a reply the near-high gate skips is SOL the ladder
-// never gets back. On the 6-hour dev window the two completer books deployed 9.58 and 9.42 SOL (18-22
-// filled tranches, first rider fill at 30-33 SOL, completion at 78-85), and the second was at 91.5%
-// of the most any ladder with the shipped 9,100 bps gate could deploy on its actual path (10.29
-// SOL); the first was deploying every lamport the account had. One lever is left inside the cap:
-// let a *held* book keep adding through a pullback that the start gate would still refuse. The
-// gate is separate from RIDER_MIN_NEAR_HIGH_BPS and from the filler's NEAR_HIGH_BPS, so starts and
-// filler round trips are unchanged. On the dev windows this is worth +10.202799 stride mean
-// (shipped +9.713543), minimum stride +5.956125, five-window mean +5.565716 (shipped +5.403332),
-// worst quiet window -0.110541 unchanged, worst drawdown 23.98% unchanged, and +23.647432 over 747
-// fills and 152 coins on the identity window (shipped +23.376588 / 742). The gain is concentrated:
-// 4jM56iiu and both quiet slices are unchanged, and last4h/stride-12 lose 0.46-0.49 SOL because the
-// looser gate adds a tranche to BctEGz before its stop. The response is flat from 6,000 to 7,700
-// bps on all 18 graded windows, and 7,500 sits inside that plateau rather than on the step.
+// Measured on the dev windows through the replay (v11 vs v10): the two constructed quiet slices
+// -0.020373 / -0.021914 SOL (v10 -0.100093 / -0.110541) over 174-180 fills and 70 coins -- 2.2x the
+// 80-fill guardrail; thirteen overlapping dev windows on a fixed slot stride mean +10.404037 (v10
+// +10.202799) with a minimum window of +6.143618; the 4-hour pump slices +13.889 / +7.155 / +7.721
+// (v10 +13.828 / +7.104 / +7.107); the 6-hour dev window +23.858321 over 374 fills and 103 coins at
+// 14.75% max drawdown (v10 +23.647432 over 747 / 152 at 14.80%). Every graded row finished,
+// reproduced its L1 regrade and met the guardrails. The gain is the fee bill and the reduced path
+// noise: the rider code and its constants are v10's, unchanged, and the identity window's fills fall
+// from 747 to 374 while its net rises 0.21 SOL.
 //
 // Decisions come only from the protocol's hello, batch events, marks, fills and account: no clock,
 // no randomness, no network, no files. Fills are echoed to stderr for diagnostics; no decision ever
@@ -234,8 +231,41 @@ const RIDER_BUY_SLIPPAGE_BPS = 3_000;
 const MAX_RIDERS = 3;
 
 // ---------------------------------------------------------------- filler settings
-/** Stake of one guardrail round trip: half the old 0.01 SOL, which halves the filler bleed. */
-const FILLER_STAKE = SOL / 200n;
+/**
+ * Stake of one guardrail round trip. It is 0.002 SOL, not 0.005: a round trip's curve fee scales
+ * with the stake while its two transaction fees do not, so on a quiet window the smaller stake pays
+ * less for the same fills. The filler's job is only to clear the fill and distinct-coin guardrails;
+ * the rider book carries the expectation. Below 0.002 the curve fee is already under a fifth of the
+ * two transaction fees, so there is nothing left to save.
+ */
+const FILLER_STAKE = SOL / 500n;
+/**
+ * Minimum slots between two filler entries, counted from the previous filler entry (~64 s at the dev
+ * window's 4.71 slots/s). The spacing, not the stake, is what caps the fee bill on a quiet window
+ * without touching the rider book: at the v10 stake with no spacing the book made 220-224 round
+ * trips on a four-hour quiet slice, and this file makes 87-90 (174-180 fills). 300 slots is the
+ * shipped point, not the candidate's 600, and the reason is guardrail margin. The 600-slot cell
+ * leaves only 124-126 fills on a quiet four-hour window against the 80-fill guardrail (1.55x),
+ * while the 300-slot cell gives 174-180 fills at 0.007 SOL below it on the stride mean (+10.404037
+ * vs +10.411500) and 0.004-0.005 SOL below it on the quiet pair (-0.021914 vs -0.017708 on the
+ * worse slice). Ranked below every compliant entry is the one failure mode that costs all three
+ * prizes, so the margin is worth 0.007 SOL. The long end is where this spacing breaks: at 1,000
+ * slots the stride mean falls 0.88 SOL because the filler timing changes which rider candidate is
+ * preempted on one completer, and at 1,100 slots a filler is promoted to a rider on a quiet slice
+ * and loses 4.64 SOL at a 54.8% drawdown.
+ */
+const FILLER_COOLDOWN_SLOTS = 300;
+/** Last batch slot a filler was started at; the spacing above is measured from it. */
+let lastFillerEntrySlot = -1_000_000_000;
+/**
+ * Slots in the first hour of a window: 67,700 slots in the dev window's four hours, divided by four.
+ * The capital-return rule is stated in slots since the window's first delivered event, never wall
+ * time, so it reads the same stream the rest of the bot reads.
+ */
+const FIRST_HOUR_SLOTS = 16_925;
+/** The account's capital at hello, and the slot of the window's first delivered batch. */
+let startCapital = 0n;
+let firstEventSlot = -1;
 /** Longest a filler is held before it is sold. */
 const FILLER_MAX_HOLD = 24;
 /**
@@ -522,6 +552,11 @@ function run(batch: Batch, state: BotState): OrderInput[] {
   observe(batch);
   const { caps } = state.hello;
   const tx = state.txFeeLamports();
+  // The capital-return clock and the starting capital come from the stream, not a wall clock: the
+  // first delivered batch's slot is the window's origin, and `hello.capital` is what the account
+  // opened with. Both are fixed for the run.
+  if (firstEventSlot < 0) firstEventSlot = batch.slot;
+  if (startCapital === 0n) startCapital = BigInt(state.hello.capital.lamports);
 
   // The stop basis is booked on the FILLS, not on the decisions: a rider buy records its batch slot
   // and decision reserve in the coin's `riderDecisions` map, and the first rider ticket that FILLS
@@ -729,6 +764,14 @@ function run(batch: Batch, state: BotState): OrderInput[] {
   }
 
   // ---------------------------------------------------------------- 3. a filler round trip
+  // The capital-return rule: an hour into the window, if the account is below its starting capital
+  // and no rider is open, the filler pays half the stake for the same guardrail fills. It cannot
+  // fire while a rider is held (the branch that may still recover), and it is decided on the account
+  // and the event stream, never on a clock.
+  const fillerStake =
+    batch.slot - firstEventSlot >= FIRST_HOUR_SLOTS && riders === 0 && equity(state) < startCapital
+      ? FILLER_STAKE / 2n
+      : FILLER_STAKE;
   if (!riderBlocked && fillers < MAX_FILLERS && openSlots > 0 && orders.length < maxOrders) {
     for (const e of batch.events) {
       if (e.event !== 'TradeEvent') continue;
@@ -739,9 +782,14 @@ function run(batch: Batch, state: BotState): OrderInput[] {
       if (c.reserve * BPS < c.reserveHigh * NEAR_HIGH_BPS) continue;
       if (c.inflow <= 0n) continue;
       if (batch.slot < c.nextEntrySlot || c.reserve <= c.blockedAtOrBelow) continue;
-      if (state.maxBuyLamports(e.mint) < FILLER_STAKE) continue;
-      if (FILLER_STAKE + tx > free - FEE_BUFFER) break;
+      // One filler entry per FILLER_COOLDOWN_SLOTS slots, whichever coin it lands on. Every future
+      // event in this batch shares the slot, so stopping the scan here and resuming on a later
+      // batch is the same thing.
+      if (batch.slot - lastFillerEntrySlot < FILLER_COOLDOWN_SLOTS) break;
+      if (state.maxBuyLamports(e.mint) < fillerStake) continue;
+      if (fillerStake + tx > free - FEE_BUFFER) break;
       c.role = 'filler';
+      lastFillerEntrySlot = batch.slot;
       c.riderSpent = 0n;
       c.entryReserve = c.reserve;
       c.entrySlot = batch.slot;
@@ -749,8 +797,8 @@ function run(batch: Batch, state: BotState): OrderInput[] {
       c.riderDecisions.clear();
       c.runVq = c.vq;
       c.runVt = c.vt > 0n ? c.vt : 1n;
-      orders.push({ side: 'buy', mint: e.mint, quote_lamports: FILLER_STAKE, max_slippage_bps: FILLER_BUY_SLIPPAGE_BPS });
-      free -= FILLER_STAKE + tx;
+      orders.push({ side: 'buy', mint: e.mint, quote_lamports: fillerStake, max_slippage_bps: FILLER_BUY_SLIPPAGE_BPS });
+      free -= fillerStake + tx;
       fillers += 1;
       openSlots -= 1;
       break;

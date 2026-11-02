@@ -115,16 +115,28 @@ because the position is leaving whatever the fill price turns out to be.
 
 ## The filler half
 
-While no rider candidate is waiting and fewer than two fillers are held, the bot makes one 0.005 SOL
-round trip per batch in a coin that is rising but far below the rider threshold: at least 1 SOL of
-real reserve, within 91% of its reserve high, positive net flow, not blocked, and with a reserve cap
-that allows the stake. A filler is sold after 24 slots, or earlier only on a 50% trailing stop, so
-in practice it times out; the wide trail is what stops a round trip from paying the fees on noise.
-If it reaches the rider threshold it is promoted in place (the tokens are kept and the rider starts
-scaling in), and if a rider candidate needs a slot the oldest filler is sold to make room two slots
-later. Each round trip costs a few hundred thousand lamports in fees and transaction fees; the filler
-book is what supplies the fills and distinct coins the guardrails ask for on a window with no
-completion in it.
+While no rider candidate is waiting and fewer than two fillers are held, the bot makes a 0.002 SOL
+round trip in a coin that is rising but far below the rider threshold: at least 1 SOL of real
+reserve, within 91% of its reserve high, positive net flow, not blocked, and with a reserve cap that
+allows the stake. Entries are spaced at least 300 slots apart — one filler entry at a time, whichever
+coin it lands on — so the book cannot churn: a quiet four-hour window makes 174-180 fills instead of
+v10's 448-460, and every round trip pays two curve fees (~2.5% of the stake each) plus two transaction
+fees (0.000105 SOL each). The 300-slot cell is chosen over the cheaper 600-slot one for guardrail
+margin: 600 leaves only 124-126 fills against the 80-fill bar (1.55x), while 300 leaves better than
+2x the bar at 0.007 SOL below it on the stride mean, and a fill-guardrail failure is the one failure
+mode that costs all three prizes. A filler is sold after 24 slots, or earlier only on a 50% trailing
+stop, so in practice it times out; the wide trail is what stops a round trip from paying the fees on
+noise. If it reaches the rider threshold it is promoted in place (the tokens are kept and the rider
+starts scaling in), and if a rider candidate needs a slot the oldest filler is sold to make room two
+slots later.
+
+Once a window is more than an hour old — 16,925 slots since its first delivered event, the dev
+window's four hours divided by four — and the account is below its starting capital with no rider
+open, the filler stake halves again to 0.001 SOL. That is the capital-return rule: on a window that
+never pumps, the bleed rate halves instead of the book paying the full stake's curve fees to the end.
+It cannot fire while a rider is held, and it reads slots since the window's first event, never wall
+time. Together the smaller stake, the spacing and the rule turn the filler from a 0.10-0.11 SOL cost
+on a quiet window into about 0.02 SOL.
 
 ## Order discipline
 
@@ -137,14 +149,27 @@ write-off closes). No reply can put more than 5 positions on the book, and every
 
 ## What was measured on the dev window
 
-The entry as committed (v10) is the grade-local result over the kit's dev window (2026-10-27
+The entry as committed (v11) is the grade-local result over the kit's dev window (2026-10-27
 00:08-06:08 UTC), two executions, byte-identical action logs:
 
-* net **+23.647432 SOL** (return +2.364743 on the 10 SOL account);
-* 747 fills over 152 coins, 318 round trips, win rate 17.92%, 21 seeded failed transactions, 4
+* net **+23.858321 SOL** (return +2.385832 on the 10 SOL account);
+* 374 fills over 103 coins, 133 round trips, win rate 11.28%, 7 seeded failed transactions, 52
   rejected orders;
-* maximum drawdown **14.80%** against the 50% guardrail;
-* all three guardrails met: 747 >= 80 fills, 152 >= 10 distinct coins, 14.80% < 50% drawdown.
+* maximum drawdown **14.75%** against the 50% guardrail;
+* all three guardrails met: 374 >= 80 fills, 103 >= 10 distinct coins, 14.75% < 50% drawdown.
+
+v11's filler book was measured over thirteen overlapping stride windows and the two constructed
+quiet slices: stride mean **+10.404037 SOL** (v10 +10.202799), minimum **+6.143618**; worst quiet
+window **-0.021914 SOL** (v10 -0.110541) over 174-180 fills and 70 coins at 0.25% drawdown; the
+three 4-hour pump slices **+13.889 / +7.155 / +7.721** (v10 +13.828 / +7.104 / +7.107). Every
+graded row finished, reproduced L1 and met the guardrails.
+
+The filler is a guardrail cost, not an edge. It is what makes a no-pump window eligible, and v10
+paid 0.10-0.11 SOL for it; the smaller stake, the spacing and the capital-return rule cut that to
+about **0.02 SOL** on the same constructed slices, which is still a loss. The spacing is deliberately
+looser than the 600-slot cell that would lose 0.004-0.005 SOL less there: 600 leaves only 124-126
+fills against the 80-fill bar (1.55x), while 300 leaves 174-180 (2.2x), and failing the fill
+guardrail forfeits all three prizes. The cost of that margin is 0.007 SOL of stride mean.
 
 v10's add gate was measured on the v9-based candidate over the same 18 graded windows: thirteen
 overlapping stride windows mean **+10.202799 SOL** (v9 +9.713543), minimum **+5.956125**, five
@@ -157,10 +182,10 @@ from 6,000 to 7,700 bps on all 18 windows, and 7,500 sits inside that plateau.
 
 The two rider-start gates are v9's and were measured on a v7-based candidate; at the shipped
 constants the second gate is the primary test, so those gates change no decision and v9's measured
-numbers were the shipped file's. The two constructed quiet windows sit at **-0.110541 / -0.100093
-SOL** with 1.18% / 1.08% drawdown, unchanged by v10. Those windows are the number to trust more than
-this single 6-hour one: the sealed final window is 4 hours, and this file's gain sits in the
-completions.
+numbers were the shipped file's. The two constructed quiet windows sit at **-0.021914 / -0.020373
+SOL** with 0.25% / 0.23% drawdown under v11 (v10: -0.110541 / -0.100093 at 1.18% / 1.08%). Those
+windows are the number to trust more than this single 6-hour one: the sealed final window is 4
+hours, and this file's gain sits in the completions.
 
 The second gate is v8's and is unchanged. Over thirteen overlapping dev windows on a fixed slot
 stride the mean at `ENTRY_RESERVE` 28/30/32/34 is **+9.126113 / +9.510831 / +9.534319 / +9.550456
@@ -170,15 +195,16 @@ the lamport before the rider-start gates are applied.
 ## Risks kept in view
 
 * **Concentration.** The edge is a handful of completing curves. On this dev window the best coin,
-  the slow ladder `GZwCGPmdm`, is +9.967045 SOL of the net; the next two are +7.314071 and
-  +6.504890. Without the best coin the net is +13.409543 SOL, without the best two +6.095472, and
-  without the best three **-0.409418 SOL**. Only 25 of the 155 per-token rows are positive. A window
+  the slow ladder `GZwCGPmdm`, is +9.971849 SOL of the net; the next two are +7.308009 and
+  +7.092480. Without the best coin the net is +13.886472 SOL, without the best two +6.578464, and
+  without the best three **-0.514017 SOL**. Only 12 of the 106 per-token rows are positive. A window
   whose completions land elsewhere, or not at all, measures like the quiet windows below.
 * **Quiet windows lose.** A constructed 4-hour window with no completion and no pumping coin loses
-  about **0.10-0.11 SOL** (the two quiet dev slices measure -0.110541 and -0.100093; before the
-  rider-start gates they measured -0.310837 and -0.284120) — now almost entirely the filler book's
-  fees, the rider book having stopped opening on the faders. The fill count falls with the trade
-  density, so the guardrail margin is real but not unbounded.
+  about **0.02 SOL** (the two quiet dev slices measure -0.021914 and -0.020373 under v11; v10
+  measured -0.110541 and -0.100093, and before the rider-start gates -0.310837 and -0.284120) —
+  almost entirely the filler book's fees, the rider book having stopped opening on the faders. The
+  fill count falls with the trade density, so the 174-180-fill margin over the 80-fill bar is real
+  but not unbounded.
 * **One rider at a time.** The 15 SOL budget is the whole rider slice, so a full rider is the whole
   book. A window whose completion lands on a second candidate — one the largest-reserve rule did not
   pick — gets none of the two-rider diversification it forgoes.
