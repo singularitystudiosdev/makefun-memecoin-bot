@@ -5,7 +5,8 @@
 //   1. A creator-participation gate on rider *starts*. A new book may only open on a coin whose
 //      creator's first buy was above zero and at most 20 SOL. The gate applies to an idle entry, a
 //      filler promotion and the preemption scan -- never to an add on an open book and never to the
-//      filler book.
+//      filler book. A coin whose creator address was never recorded passes the gate: the gate reads
+//      a creator, and with no reading it refuses nothing (see creatorAllows).
 //   2. Retire-after-2-rejections. A rider book with two consecutive rejected tranches and no filled
 //      tranche releases its role and its slot at once, exactly as a stall exit does.
 //
@@ -25,6 +26,14 @@
 // windows overlap 96%; this signal has a mechanism, it reproduced on three independent passes, its
 // measured cost on quiet windows is exactly zero, and it blocks no coin the bot has ever profited
 // from. A thrice-repeated +0.19 with a mechanism and a zero-cost branch is not that kind of noise.
+//
+// What the gate refuses is a *known* creator. A coin first delivered through a trade, with no
+// CreateEvent in the stream, carries no creator address and no creator stake to read; passing it is
+// the only refusal-free choice, because refusing an unread coin would gate on the absence of data
+// rather than on a shape. On the dev windows every coin's CreateEvent arrives at chain_seq 0, so
+// this branch never runs there and the measured v12 numbers below are unchanged to the lamport; it
+// exists because the sealed window is produced by the same collector and its shape is not ours to
+// verify.
 //
 // Why the retire rule. v11 leaves a rider role on a coin that has rejected two tranches and holds no
 // position for thousands of reply batches (4,880 on identity, 46,287 across the 19 graded windows),
@@ -208,7 +217,9 @@ const RIDER_MAX_VELOCITY_24 = 400_000_000n;
  * tens of SOL is a whale launch with no organic demand behind it. The two shapes this admits are the
  * organic launch -- a small but non-zero creator stake -- and nothing else. 20 SOL is the measured
  * boundary: it is above every coin the bot has ever profited from (10, 2.2 and 0.98765432 SOL) and
- * below the 29.63 SOL whale-first buy it removes and the 85 SOL one-buy launches it refuses.
+ * below the 29.63 SOL whale-first buy it removes and the 85 SOL one-buy launches it refuses. A coin
+ * with no recorded creator passes the gate without reaching this cap: there is no creator stake to
+ * compare against it (see creatorAllows).
  */
 const CREATOR_MAX_FIRST_BUY = 20n * SOL;
 /**
@@ -514,8 +525,18 @@ function reserveVelocity(c: Coin, slot: number): bigint {
  * at most CREATOR_MAX_FIRST_BUY. Read by riderStartsWell only, so it applies to starts -- idle
  * entries, filler promotions and the preemption scan -- and never to an add on a book already open,
  * and never to the filler book.
+ *
+ * An unrecorded creator passes. `creator` is '' until a CreateEvent for the coin arrives, so a coin
+ * first delivered through a trade -- no CreateEvent in the stream at all -- leaves both the creator
+ * address and its first buy unreadable, and `creatorFirstBuy` stays 0n whatever the creator did.
+ * Only a known creator is judged: one that never bought (first buy 0n) or whose first buy is above
+ * the cap refuses. Refusing an empty reading would gate on the absence of data instead of on a
+ * launch shape. Every dev-window coin carries its CreateEvent at chain_seq 0, so this branch never
+ * runs there and the measured numbers are unchanged; it covers the sealed window, whose collection
+ * shape is not ours to verify.
  */
 function creatorAllows(c: Coin): boolean {
+  if (c.creator === '') return true;
   return c.creatorFirstBuy > 0n && c.creatorFirstBuy <= CREATOR_MAX_FIRST_BUY;
 }
 
