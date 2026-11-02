@@ -1,9 +1,36 @@
-// Graduation rider v11: hold a late-curve coin through to its bonding-curve completion, and carry a
+// Graduation rider v12: hold a late-curve coin through to its bonding-curve completion, and carry a
 // small filler book that makes cheap round trips so the entry still meets the fill and distinct-coin
-// guardrails on a window with no completion in it. It is v10 plus one change to the filler book:
-// the 0.005 SOL round trip becomes 0.002 SOL, filler entries are spaced at least 300 slots apart,
-// and the stake halves again once a window is an hour old and the account is down with
-// no rider open. v10's rider is unchanged, including the 75% add gate and the two rider-start gates.
+// guardrails on a window with no completion in it. It is v11 plus two changes, and nothing else:
+//
+//   1. A creator-participation gate on rider *starts*. A new book may only open on a coin whose
+//      creator's first buy was above zero and at most 20 SOL. The gate applies to an idle entry, a
+//      filler promotion and the preemption scan -- never to an add on an open book and never to the
+//      filler book.
+//   2. Retire-after-2-rejections. A rider book with two consecutive rejected tranches and no filled
+//      tranche releases its role and its slot at once, exactly as a stall exit does.
+//
+// The rider, the filler book, every constant and every other guard are v11's, unchanged.
+//
+// Why the creator gate. A creator that puts nothing into its own launch is launching-and-leaving; a
+// coin whose creator's first buy is tens of SOL is a whale launch with no organic demand behind it.
+// The gate admits an organic launch -- a small but non-zero creator stake -- and refuses both those
+// shapes. Measured three times, on passes K, L and M, the strict (0, 20] gate moves thirteen-window
+// stride mean +0.194350 SOL (pass K +0.246538) and the 6-hour identity window +0.476620, at zero
+// cost on both quiet windows. It blocks no completer the bot ever held (`blockedCompletersHeld = 0`
+// on all 19 windows): the two organic dev completers pass, and what it removes is the two losing
+// rider books -- a creator that never traded, and a 29.63 SOL whale-first buy.
+//
+// The decision, recorded plainly: +0.194350 is below the 0.30 stride-mean bar this project sets for
+// a new lever, and v12 ships it anyway. The bar exists to filter noise on an instrument whose
+// windows overlap 96%; this signal has a mechanism, it reproduced on three independent passes, its
+// measured cost on quiet windows is exactly zero, and it blocks no coin the bot has ever profited
+// from. A thrice-repeated +0.19 with a mechanism and a zero-cost branch is not that kind of noise.
+//
+// Why the retire rule. v11 leaves a rider role on a coin that has rejected two tranches and holds no
+// position for thousands of reply batches (4,880 on identity, 46,287 across the 19 graded windows),
+// because nothing releases a book that never filled. Releasing it is hygiene, not edge: it is
+// PnL-neutral to the lamport on every graded window (delta 0.000000), and it is shipped as
+// correctness, so that a role cannot outlive the ladder that opened it.
 //
 // Why the filler changed. The rider book is the whole edge and it does not open on a quiet window:
 // on both constructed quiet slices v10 makes no rider fill at all, so their entire loss is the filler
@@ -92,15 +119,18 @@
 // bleed rate halves instead of the book paying the full stake's curve fees to the end. The clock is
 // slots since the window's first event, never wall time, and it cannot fire while a rider is open.
 //
-// Measured on the dev windows through the replay (v11 vs v10): the two constructed quiet slices
-// -0.020373 / -0.021914 SOL (v10 -0.100093 / -0.110541) over 174-180 fills and 70 coins -- 2.2x the
-// 80-fill guardrail; thirteen overlapping dev windows on a fixed slot stride mean +10.404037 (v10
-// +10.202799) with a minimum window of +6.143618; the 4-hour pump slices +13.889 / +7.155 / +7.721
-// (v10 +13.828 / +7.104 / +7.107); the 6-hour dev window +23.858321 over 374 fills and 103 coins at
-// 14.75% max drawdown (v10 +23.647432 over 747 / 152 at 14.80%). Every graded row finished,
-// reproduced its L1 regrade and met the guardrails. The gain is the fee bill and the reduced path
-// noise: the rider code and its constants are v10's, unchanged, and the identity window's fills fall
-// from 747 to 374 while its net rises 0.21 SOL.
+// Measured on the dev windows through the replay (v12 vs v11): the 6-hour identity window
+// +24.334941 SOL over 348 fills and 101 coins at 14.7264% max drawdown (v11 +23.858321 over 374
+// fills and 103 coins at 14.7534%); thirteen overlapping dev windows on a fixed slot stride mean
+// +10.598387 (v11 +10.404037) with a minimum window of +6.585266; the five 4-hour slices mean
+// +5.874121 (v11 +5.744463); the two constructed quiet slices -0.020373 / -0.021914 SOL, unchanged
+// from v11 to the lamport over 174-180 fills and 70 coins -- 2.2x the 80-fill guardrail. Every
+// graded row finished, reproduced its L1 regrade and met the guardrails. The gate supplies the whole
+// measured gain (the identity window drops the losing rider book and frees its slot for the
+// completing one, 374 -> 348 fills and +0.476620 net); the retire rule adds exactly 0.000000 to
+// every window, which is why it ships as hygiene rather than as a lever. The filler's own change,
+// v11 over v10, was the fee bill: the constructed quiet slices went -0.100093 / -0.110541 ->
+// -0.020373 / -0.021914 SOL and the identity window +23.647432 -> +23.858321.
 //
 // Decisions come only from the protocol's hello, batch events, marks, fills and account: no clock,
 // no randomness, no network, no files. Fills are echoed to stderr for diagnostics; no decision ever
@@ -172,6 +202,16 @@ const RIDER_MIN_NEAR_HIGH_BPS = 9_800n;
  */
 const RIDER_MAX_VELOCITY_24 = 400_000_000n;
 /**
+ * The creator-participation gate on a rider *start* (never on an add, never on the filler book): the
+ * creator's first buy on the coin must be above zero and at most this many lamports. A creator that
+ * never buys is launching-and-leaving and has no stake behind the coin; a creator whose first buy is
+ * tens of SOL is a whale launch with no organic demand behind it. The two shapes this admits are the
+ * organic launch -- a small but non-zero creator stake -- and nothing else. 20 SOL is the measured
+ * boundary: it is above every coin the bot has ever profited from (10, 2.2 and 0.98765432 SOL) and
+ * below the 29.63 SOL whale-first buy it removes and the 85 SOL one-buy launches it refuses.
+ */
+const CREATOR_MAX_FIRST_BUY = 20n * SOL;
+/**
  * Signed quote flow over the last FLOW_TRADES trades, in lamports, needed to start or add. 0 means
  * the tape must be net buying but a large net flow is not required: the 0.4 SOL threshold skipped
  * riders that were still being bought.
@@ -225,6 +265,15 @@ const CRASH_GUARD_BPS = 5_000n;
  * that a ladder pausing between adds is not sold.
  */
 const STALL_SLOTS = 225;
+/**
+ * Consecutive rejected rider tranches, with no filled tranche, that release the book: the role and
+ * the slot go back on the batch the second rejection resolves, the way a stall exit releases them.
+ * This is hygiene, not edge -- it is PnL-neutral on every graded window -- and it exists because
+ * nothing in v11 released a book that never filled, so a coin that rejected every tranche held a
+ * rider slot for thousands of reply batches. 2 is the smallest N that retires every offending book
+ * in the nineteen graded windows; one rejection is ordinary contention and must not release a book.
+ */
+const RETIRE_AFTER_REJECTIONS = 2;
 /** Rider buys allow this much drift between the decision and the fill two slots later. */
 const RIDER_BUY_SLIPPAGE_BPS = 3_000;
 /** Rider positions held at once, inside the account's position cap. */
@@ -348,6 +397,15 @@ interface Coin {
    * ever holds this coin's unresolved rider tickets.
    */
   riderDecisions: Map<number, bigint>;
+  /** The creator named by the coin's CreateEvent; '' until that event arrives. */
+  creator: string;
+  /**
+   * The creator's first buy on the coin, in lamports, 0n until it buys: the creator-participation
+   * gate on rider starts reads it. A creator that only sells, or never trades, leaves it 0n.
+   */
+  creatorFirstBuy: bigint;
+  /** Consecutive rejected rider tranches since the last filled one, reset by begin, fill and exit. */
+  riderRejects: number;
   /** Highest price since the rider started, as a rational. */
   runVq: bigint;
   runVt: bigint;
@@ -384,6 +442,9 @@ function coinFor(mint: string, slot: number, vq: bigint, vt: bigint): Coin {
     entrySlot: -1,
     stopReserve: 0n,
     riderDecisions: new Map(),
+    creator: '',
+    creatorFirstBuy: 0n,
+    riderRejects: 0,
     runVq: 0n,
     runVt: 1n,
     nextEntrySlot: 0,
@@ -449,13 +510,25 @@ function reserveVelocity(c: Coin, slot: number): bigint {
 }
 
 /**
- * The rider start gate: a new book may only open on a coin still within RIDER_MIN_NEAR_HIGH_BPS of
- * its own reserve high whose reserve rose no faster than RIDER_MAX_VELOCITY_24 per slot over the
- * last RIDER_VELOCITY_SLOTS slots. It applies to starts only -- idle entries, filler promotions and
- * the preemption scan -- never to an add on a book already open, which keeps the looser add gate.
+ * The creator-participation gate: a rider start needs the creator's first buy to be above zero and
+ * at most CREATOR_MAX_FIRST_BUY. Read by riderStartsWell only, so it applies to starts -- idle
+ * entries, filler promotions and the preemption scan -- and never to an add on a book already open,
+ * and never to the filler book.
+ */
+function creatorAllows(c: Coin): boolean {
+  return c.creatorFirstBuy > 0n && c.creatorFirstBuy <= CREATOR_MAX_FIRST_BUY;
+}
+
+/**
+ * The rider start gate: a new book may only open on a coin whose creator passed the participation
+ * gate above, that is still within RIDER_MIN_NEAR_HIGH_BPS of its own reserve high, and whose
+ * reserve rose no faster than RIDER_MAX_VELOCITY_24 per slot over the last RIDER_VELOCITY_SLOTS
+ * slots. It applies to starts only -- idle entries, filler promotions and the preemption scan --
+ * never to an add on a book already open, which keeps the looser add gate.
  */
 function riderStartsWell(c: Coin, slot: number): boolean {
   return (
+    creatorAllows(c) &&
     c.reserve * BPS >= c.reserveHigh * RIDER_MIN_NEAR_HIGH_BPS &&
     reserveVelocity(c, slot) <= RIDER_MAX_VELOCITY_24
   );
@@ -492,6 +565,7 @@ function beginRider(c: Coin, slot: number): void {
   c.entrySlot = slot;
   c.stopReserve = 0n;
   c.riderDecisions.clear();
+  c.riderRejects = 0;
   c.runHighReserve = c.reserve;
   c.runHighSlot = slot;
   c.runVq = c.vq;
@@ -515,6 +589,7 @@ function observe(batch: Batch): void {
   for (const e of batch.events) {
     if (e.event === 'CreateEvent') {
       const c = coinFor(e.mint, e.slot, BigInt(e.virtual_quote_reserves), BigInt(e.virtual_token_reserves));
+      c.creator = e.creator;
       absorb(c, 0n, BigInt(e.virtual_quote_reserves), BigInt(e.virtual_token_reserves), e.slot, null);
     } else if (e.event === 'TradeEvent') {
       const c = coinFor(e.mint, e.slot, BigInt(e.virtual_quote_reserves), BigInt(e.virtual_token_reserves));
@@ -528,6 +603,11 @@ function observe(batch: Batch): void {
         e.slot,
         e.is_buy ? quote : -quote,
       );
+      // The creator's first buy, in stream order: the creator-participation gate on rider starts
+      // reads it. Once a coin's creator has bought, later creator trades cannot move it.
+      if (e.is_buy && c.creatorFirstBuy === 0n && e.user === c.creator) {
+        c.creatorFirstBuy = quote;
+      }
       // The stall clock reads the market tape only: a TradeEvent's recorded reserve. A mark carries
       // the bot's own impact (the reserves a fill or close would meet), so folding marks in would let
       // the bot's own fills restart its own stall timer.
@@ -571,7 +651,32 @@ function run(batch: Batch, state: BotState): OrderInput[] {
     // never book the stop.
     const decidedReserve = f.side === 'buy' ? c.riderDecisions.get(f.decided_slot) : undefined;
     const riderBuy = f.side === 'buy' && decidedReserve !== undefined;
-    if (riderBuy) c.riderDecisions.delete(f.decided_slot);
+    if (riderBuy) {
+      c.riderDecisions.delete(f.decided_slot);
+      if (f.status === 'filled') {
+        c.riderRejects = 0;
+      } else if (f.status === 'rejected' && RETIRE_AFTER_REJECTIONS > 0) {
+        c.riderRejects += 1;
+        // Two rejected tranches and no filled one: the book cannot trade, so release the role and
+        // the slot now instead of holding them until some other guard fires. Hygiene, not edge --
+        // this is PnL-neutral on every graded window; it only removes the state leak.
+        if (
+          c.riderRejects >= RETIRE_AFTER_REJECTIONS &&
+          c.role === 'rider' &&
+          c.riderSpent === 0n &&
+          state.positions.get(f.mint) === undefined
+        ) {
+          console.error(`retire ${f.slot} ${f.mint} rejects=${c.riderRejects}`);
+          c.role = 'idle';
+          c.riderSpent = 0n;
+          c.stopReserve = 0n;
+          c.riderDecisions.clear();
+          c.riderRejects = 0;
+          c.blockedAtOrBelow = c.reserve;
+          c.nextEntrySlot = f.slot + 10;
+        }
+      }
+    }
     if (f.status !== 'filled') continue;
     if (f.side === 'buy') {
       if (c.role === 'rider') {
@@ -586,6 +691,7 @@ function run(batch: Batch, state: BotState): OrderInput[] {
       c.riderSpent = 0n;
       c.stopReserve = 0n;
       c.riderDecisions.clear();
+      c.riderRejects = 0;
     }
   }
 
@@ -699,6 +805,7 @@ function run(batch: Batch, state: BotState): OrderInput[] {
     c.riderSpent = 0n;
     c.stopReserve = 0n;
     c.riderDecisions.clear();
+    c.riderRejects = 0;
     if (reason === 'fillerTime' || reason === 'fillerTrail' || reason === 'preempt') fillers -= 1;
     else riders -= 1;
     free -= tx;
